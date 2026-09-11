@@ -7,6 +7,7 @@ using Ozakboy.Core.Abstractions;
 using Ozakboy.Http;
 using Ozakboy.Http.RateLimiting;
 using Ozakboy.Notify.Telegram.Internal;
+using Ozakboy.Security.Masking;
 
 namespace Ozakboy.Notify.Telegram;
 
@@ -18,58 +19,67 @@ namespace Ozakboy.Notify.Telegram;
 /// <remarks>
 /// <para>
 /// <b>權杖在網址路徑裡。</b>Bot API 的位址是 <c>https://api.telegram.org/bot&lt;TOKEN&gt;/sendMessage</c>,沒有
-/// 標頭或本體可以替代。任何會輸出請求位址的地方,都會把權杖一起輸出。本套件查過的輸出點與對策如下:
+/// 標頭或本體可以替代。任何會輸出請求位址的地方,都會把權杖一起輸出。欄位名規則看不到路徑的一段,
+/// 攔得住它的只有「已登記祕密的字面替換」。本套件查過的輸出點與對策如下:
 /// <b>The token is in the URL path.</b> The Bot API address is
 /// <c>https://api.telegram.org/bot&lt;TOKEN&gt;/sendMessage</c>, and no header or body alternative exists. Anything
-/// that prints the request URI prints the token with it. The output points this package examined, and what it
-/// does about each:
+/// that prints the request URI prints the token with it. Name-based masking cannot see a path segment; only literal
+/// replacement of a registered secret catches it. The output points this package examined, and what it does about
+/// each:
 /// </para>
 /// <list type="number">
 /// <item><description>
 /// <c>IHttpClientFactory</c> 預設掛上的 <c>LogicalHandler</c> / <c>ClientHandler</c> 日誌會在 Information 層級寫出
 /// 完整位址(.NET 只遮 query,不遮路徑),<c>LogicalHandler</c> 還會把位址放進日誌範圍(scope)。
-/// → 註冊時對這個具名用戶端呼叫 <c>RemoveAllLoggers()</c>。
+/// → 具名用戶端以 <c>AddOzakboyHttpPipeline</c> 註冊,它會移除這些預設日誌。
 /// <c>IHttpClientFactory</c>'s default <c>LogicalHandler</c> / <c>ClientHandler</c> logging writes the full URI at
 /// Information level (.NET redacts the query, not the path), and <c>LogicalHandler</c> also puts it in a logging
-/// scope. → Registration calls <c>RemoveAllLoggers()</c> on this named client.
+/// scope. → The named client is registered with <c>AddOzakboyHttpPipeline</c>, which removes that default logging.
 /// </description></item>
 /// <item><description>
-/// <c>Ozakboy.Http</c> 的 <c>SanitizingLoggingHandler</c> 以 <c>SafeMasking.MaskUri</c> 記錄位址,那只遮 query 參數的值;
-/// 雖然結果會再過一次已登記祕密的替換,但 <c>AddOzakboyHttpPipeline</c> 沒有提供登記的入口,
-/// 而它記錄失敗時把<b>原始例外物件</b>交給日誌器,例外的內容完全不經遮罩。
-/// → 這個用戶端不掛 <c>SanitizingLoggingHandler</c>,改由本類別自己記錄(只記等級、分段、錯誤代碼與耗時,永不記位址)。
-/// <c>Ozakboy.Http</c>'s <c>SanitizingLoggingHandler</c> logs the URI through <c>SafeMasking.MaskUri</c>, which masks
-/// only query-parameter values. Its output does pass through registered-secret replacement, but
-/// <c>AddOzakboyHttpPipeline</c> offers no way to register one, and on failure it hands the <b>raw exception
-/// object</b> to the logger, where nothing masks it. → This client does not use <c>SanitizingLoggingHandler</c>;
-/// this class logs for itself (level, part, error code, and timing only — never the URI).
+/// 管線自己的 <c>SanitizingLoggingHandler</c> 會記錄位址,失敗時也記錄例外。
+/// → 權杖(完整權杖與冒號後的祕密段)以 <c>HttpPipelineOptions.KnownSecrets</c> 登記在這個用戶端的遮罩器,
+/// 它記下的位址與例外文字都經過字面替換,交給日誌器的例外是 <see cref="SanitizedException"/> 而不是原始物件。
+/// 請求與回應本體的日誌保持關閉(本體裡是 chat id 與訊息內容)。本類別自己的日誌只記等級、分段、錯誤代碼與耗時,不記位址。
+/// The pipeline's own <c>SanitizingLoggingHandler</c> logs the URI, and the exception on failure. → The token (the
+/// full token and the secret half after the colon) is registered on this client's masker through
+/// <c>HttpPipelineOptions.KnownSecrets</c>, so the URI and exception text it records go through literal
+/// replacement, and the exception it hands the logger is a <see cref="SanitizedException"/>, not the original.
+/// Request and response body logging stays off (the body holds the chat id and the message text). This class's own
+/// log lines carry only the level, part, error code, and timing — never the URI.
 /// </description></item>
 /// <item><description>
-/// <c>HttpErrorMapper.FromException</c> 把例外訊息接進 <c>Error.Message</c>,並把原始例外放進 <c>Error.Exception</c>;
-/// 連線層例外的訊息可能含位址。→ 所有交出去的錯誤都經過 <c>TokenRedactor</c>:代碼、訊息、每一筆資料都做權杖字面替換,
-/// 例外一律換成 <see cref="RedactedException"/>。
-/// <c>HttpErrorMapper.FromException</c> splices the exception message into <c>Error.Message</c> and keeps the raw
-/// exception in <c>Error.Exception</c>, and a transport exception's message may include the URI. → Every error
-/// handed out passes through <c>TokenRedactor</c>: the code, the message, and every data entry get literal token
-/// replacement, and the exception is always swapped for a <see cref="RedactedException"/>.
+/// 由傳輸層例外組出的錯誤:連線層例外的訊息可能含位址。→ 門面以 <c>CreateOzakboyHttpPipelineClient</c> 建立,
+/// 帶著同一個遮罩器;它回傳的錯誤已經遮罩,例外已經換成 <see cref="SanitizedException"/>。
+/// Errors built from transport exceptions, whose messages may include the URI. → The facade is built with
+/// <c>CreateOzakboyHttpPipelineClient</c> and carries the same masker; the errors it returns are already masked,
+/// with the exception swapped for a <see cref="SanitizedException"/>.
 /// </description></item>
 /// <item><description>
-/// 回應本體可能回聲任何東西。→ 錯誤只帶 Telegram 的 <c>description</c>(已截斷、已遮罩),不帶原始本體。
-/// A response body can echo anything back. → Errors carry only Telegram's <c>description</c>, truncated and
-/// redacted, never the raw body.
+/// 管線看不到的來源:Telegram 回應本體裡的 <c>description</c>(4xx 對門面而言是成功取得回應,本體由本類別自己解析),
+/// 以及本類別自己組出的錯誤(讀本體失敗、排隊或退避時被取消)。→ 所有交出去的錯誤在單一出口再經過 <c>TokenRedactor</c>:
+/// 代碼、訊息、每一筆資料都做權杖字面替換,例外一律換成 <see cref="RedactedException"/>;錯誤只帶已遮罩的
+/// <c>description</c>,不帶原始本體。管線已經會遮罩,這一道仍然保留,因為這些來源從不經過管線的遮罩器。
+/// Sources the pipeline never sees: the <c>description</c> in Telegram's response body (a 4xx is a successfully
+/// obtained response to the facade, and this class parses the body itself), and errors this class builds on its own
+/// (a failed body read, a cancellation while queued or backing off). → Every error handed out passes through
+/// <c>TokenRedactor</c> at a single exit: the code, the message, and every data entry get literal token replacement,
+/// and the exception is always swapped for a <see cref="RedactedException"/>; errors carry only the redacted
+/// <c>description</c>, never the raw body. This stays although the pipeline masks too, because these sources never
+/// pass through the pipeline's masker.
 /// </description></item>
 /// </list>
 /// <para>
 /// 其他做法為什麼不夠:<b>把權杖放進 <see cref="HttpClient.BaseAddress"/>、日誌只記相對路徑</b>行不通 ——
 /// <see cref="HttpClient"/> 在進入處理器管線之前就把位址組成絕對位址,每一個處理器看到的都是完整位址。
-/// <b>只登記權杖為已知祕密</b>擋得住訊息字串,擋不住例外物件與 factory 預設日誌。
-/// <b>只關掉日誌</b>擋不住錯誤回傳路徑。三道(移除預設日誌、不記位址、邊界遮罩)缺一不可。
+/// <b>只靠管線的遮罩器</b>擋不住它看不到的來源(上面第 4 點);<b>只靠出口遮罩</b>擋不住日誌。
+/// 兩道(管線遮罩器登記權杖、出口遮罩)缺一不可,預設日誌則由管線移除。
 /// Why the alternatives fall short: <b>putting the token in <see cref="HttpClient.BaseAddress"/> and logging only
 /// the relative path</b> does not work — <see cref="HttpClient"/> resolves the absolute URI before the handler
-/// pipeline runs, so every handler sees the full address. <b>Registering the token as a known secret alone</b>
-/// covers message strings, not exception objects or the factory's default logging. <b>Switching logging off
-/// alone</b> leaves the error-return path open. All three — default logging removed, no URI logged, redaction at
-/// the boundary — are needed.
+/// pipeline runs, so every handler sees the full address. <b>Relying on the pipeline's masker alone</b> leaves the
+/// sources it cannot see (point 4 above); <b>relying on exit redaction alone</b> leaves the logs. Both — the token
+/// registered on the pipeline's masker, and redaction at the exit — are needed, with the default logging removed
+/// by the pipeline.
 /// </para>
 /// <para>
 /// 仍在本套件控制範圍外的輸出點:<c>System.Net.Http</c> 的 <c>Activity</c>(分散式追蹤的 <c>url.full</c> 標籤)與
@@ -79,21 +89,28 @@ namespace Ozakboy.Notify.Telegram;
 /// tracing or event listener is attached; see the README.
 /// </para>
 /// <para>
-/// <b>與 <c>Ozakboy.Http</c> 的分工。</b>本類別用它的 <see cref="HttpPipelineClient"/>(例外收斂為 Result、逾時與呼叫端取消的區分)
-/// 與 <see cref="WeightedRateLimiter"/>(建在官方 <c>System.Threading.RateLimiting</c> 上、以 <see cref="TimeProvider"/> 驅動);
-/// 刻意<b>不用</b>它的 <c>RetryHandler</c>:Telegram 把等待秒數放在回應本體的 <c>parameters.retry_after</c>,
-/// <c>RetryHandler</c> 只認得 <c>Retry-After</c> 標頭,會用自己的退避提早重送;<c>sendMessage</c> 是 <c>POST</c>,
-/// 要讓 <c>RetryHandler</c> 重試就得把它標成冪等,那是在對重試層說謊;而在標準管線順序下,限流在重試外層,
-/// 重試出去的請求不會再經過節流。重試因此收在本類別的單一迴圈裡,那裡知道每一種失敗「送出去了沒有」。
-/// <b>Division of labour with <c>Ozakboy.Http</c>.</b> This class uses its <see cref="HttpPipelineClient"/>
-/// (exceptions folded into Result, timeouts told apart from caller cancellation) and
+/// <b>與 <c>Ozakboy.Http</c> 的分工。</b>本類別用它的管線(<c>AddOzakboyHttpPipeline</c> 的遮罩日誌、權杖遮罩器與逾時)、
+/// <see cref="HttpPipelineClient"/>(例外收斂為 Result、逾時與呼叫端取消的區分),以及優先閘門裡的
+/// <see cref="WeightedRateLimiter"/>(建在官方 <c>System.Threading.RateLimiting</c> 上、以 <see cref="TimeProvider"/> 驅動)。
+/// 管線的限流段關閉、<c>RetryHandler</c> 設為 <c>RetryPolicy.NoRetry</c>,重送與節流都收在本類別:
+/// Telegram 把等待秒數放在回應本體的 <c>parameters.retry_after</c>,<c>RetryHandler</c> 只認得 <c>Retry-After</c> 標頭,
+/// 會用自己的退避提早重送;<c>sendMessage</c> 是 <c>POST</c>,要讓 <c>RetryHandler</c> 重試就得把它標成冪等,
+/// 那是在對重試層說謊;而管線的限流器依抵達順序放行,給不了 Critical 優先,也不知道 429 暫停要整個通知器共用。
+/// 本類別的每一次送出(含重送)都重新排隊、各付一份節流額度,與 0.3.0 管線「每次嘗試各付權重」的原則一致。
+/// 重試因此收在本類別的單一迴圈裡,那裡知道每一種失敗「送出去了沒有」。
+/// <b>Division of labour with <c>Ozakboy.Http</c>.</b> This class uses its pipeline (the masked logging, token
+/// masker, and timeouts from <c>AddOzakboyHttpPipeline</c>), its <see cref="HttpPipelineClient"/> (exceptions
+/// folded into Result, timeouts told apart from caller cancellation), and, inside the priority gate,
 /// <see cref="WeightedRateLimiter"/> (built on the official <c>System.Threading.RateLimiting</c>, driven by
-/// <see cref="TimeProvider"/>). It deliberately does <b>not</b> use its <c>RetryHandler</c>: Telegram puts the
-/// wait in the body's <c>parameters.retry_after</c>, which <c>RetryHandler</c> cannot see — it knows only the
-/// <c>Retry-After</c> header and would resend early on its own backoff; <c>sendMessage</c> is a <c>POST</c>, so
-/// letting <c>RetryHandler</c> retry it means labelling it idempotent, which lies to the retry layer; and in the
-/// standard pipeline order the limiter sits outside retry, so retried requests would skip throttling. Retrying
-/// therefore lives in one loop in this class, which knows for each kind of failure whether anything went out.
+/// <see cref="TimeProvider"/>). The pipeline's rate-limiting section is off and its <c>RetryHandler</c> is set to
+/// <c>RetryPolicy.NoRetry</c>, leaving resending and throttling to this class: Telegram puts the wait in the body's
+/// <c>parameters.retry_after</c>, which <c>RetryHandler</c> cannot see — it knows only the <c>Retry-After</c> header
+/// and would resend early on its own backoff; <c>sendMessage</c> is a <c>POST</c>, so letting <c>RetryHandler</c>
+/// retry it means labelling it idempotent, which lies to the retry layer; and the pipeline's limiter admits in
+/// arrival order, so it cannot put a Critical first and knows nothing of a 429 pause shared across the notifier.
+/// Every send this class makes, resends included, queues again and pays for its own slot, the same rule the 0.3.0
+/// pipeline follows ("every attempt pays its own weight"). Retrying therefore lives in one loop in this class,
+/// which knows for each kind of failure whether anything went out.
 /// </para>
 /// <para>
 /// <b>重送策略。</b>429 代表 Telegram 明確拒收,依 <c>retry_after</c> 等待後重送,不可能造成重複。
@@ -136,14 +153,16 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
     /// </summary>
     /// <remarks>
     /// 公開這個名稱只是為了讓測試能替換最內層的處理器。<b>不要</b>在這個用戶端上掛任何會記錄請求位址的處理器
-    /// (包括 <c>ConfigureHttpClientDefaults</c> 全域加上的那些)—— 位址裡就是權杖。
+    /// (包括 <c>ConfigureHttpClientDefaults</c> 全域加上的那些)—— 位址裡就是權杖,而權杖只登記在管線自己的遮罩器上,
+    /// 別的處理器不會遮它。
     /// The name is public only so that tests can replace the innermost handler. Do <b>not</b> attach any handler
     /// that logs request URIs to this client (including ones added globally through
-    /// <c>ConfigureHttpClientDefaults</c>): the URI contains the token.
+    /// <c>ConfigureHttpClientDefaults</c>): the URI contains the token, which is registered only on the pipeline's
+    /// own masker, and no other handler masks it.
     /// </remarks>
     public const string HttpClientName = "Ozakboy.Notify.Telegram";
 
-    private readonly Func<HttpClient> _clientSource;
+    private readonly Func<SecretMasker, HttpTimeoutOptions, TimeProvider, HttpPipelineClient> _pipelineSource;
     private readonly Uri _sendMessageUri;
     private readonly string _chatId;
     private readonly HttpTimeoutOptions _timeouts;
@@ -162,6 +181,15 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
     /// Creates the notifier over an <see cref="IHttpClientFactory"/>, taking the <see cref="HttpClientName"/>
     /// client from it for every send.
     /// </summary>
+    /// <remarks>
+    /// 門面由本類別建立:錯誤以只登記了這把權杖的遮罩器遮罩,逾時取自 <see cref="TelegramNotifierOptions.RequestTimeout"/>。
+    /// <see cref="TelegramServiceCollectionExtensions.AddTelegramNotifier"/> 註冊的通知器不走這條路,
+    /// 它以 <c>CreateOzakboyHttpPipelineClient</c> 取得帶著管線同一份遮罩器與逾時的門面。
+    /// The facade is built by this class: errors are masked with a masker carrying only this token, and timeouts
+    /// come from <see cref="TelegramNotifierOptions.RequestTimeout"/>. The notifier that
+    /// <see cref="TelegramServiceCollectionExtensions.AddTelegramNotifier"/> registers does not take this route; it
+    /// gets its facade from <c>CreateOzakboyHttpPipelineClient</c>, with the pipeline's own masker and timeouts.
+    /// </remarks>
     /// <param name="httpClientFactory">用戶端工廠。The client factory.</param>
     /// <param name="options">設定。建立時即複製一份,之後修改原物件不影響通知器。The options, copied on construction; later changes have no effect.</param>
     /// <param name="logger">日誌器,可為 <see langword="null"/>。The logger, which may be <see langword="null"/>.</param>
@@ -188,11 +216,15 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
     /// </summary>
     /// <param name="httpClient">
     /// 用戶端,由呼叫端負責釋放。它的 <see cref="HttpClient.Timeout"/> 應設為無限,逾時交給 <see cref="TelegramNotifierOptions.RequestTimeout"/>;
-    /// 若它來自 <see cref="IHttpClientFactory"/>,務必確認已移除預設日誌,否則位址(含權杖)會被記錄。
+    /// 若它來自 <see cref="IHttpClientFactory"/>,務必確認已移除預設日誌,否則位址(含權杖)會被記錄。以
+    /// <c>AddOzakboyHttpPipeline</c> 註冊的用戶端這兩件事都已做好,但權杖要登記進它的 <c>KnownSecrets</c>,
+    /// 否則管線自己的日誌處理器記下的位址會帶著權杖。門面由本類別建立,錯誤以登記了權杖的遮罩器遮罩。
     /// The client, which the caller disposes. Its <see cref="HttpClient.Timeout"/> should be infinite, leaving
     /// timeouts to <see cref="TelegramNotifierOptions.RequestTimeout"/>; if it comes from
     /// <see cref="IHttpClientFactory"/>, make sure the default logging has been removed, or the URI — token
-    /// included — will be logged.
+    /// included — will be logged. A client registered with <c>AddOzakboyHttpPipeline</c> has both taken care of, but
+    /// the token must go into its <c>KnownSecrets</c>, or the pipeline's own logging handler records the URI with
+    /// the token in it. The facade is built by this class, and errors are masked with a masker that knows the token.
     /// </param>
     /// <param name="options">設定。The options.</param>
     /// <param name="logger">日誌器,可為 <see langword="null"/>。The logger, which may be <see langword="null"/>.</param>
@@ -213,7 +245,35 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
     {
     }
 
-    private TelegramNotifier(Func<HttpClient> clientSource, TelegramNotifierOptions options, ILogger? logger, TimeProvider? timeProvider)
+    /// <summary>
+    /// 以 <c>AddOzakboyHttpPipeline</c> 註冊的具名用戶端建立通知器,供 <see cref="TelegramServiceCollectionExtensions.AddTelegramNotifier"/> 使用。
+    /// Creates the notifier over a named client registered with <c>AddOzakboyHttpPipeline</c>, for
+    /// <see cref="TelegramServiceCollectionExtensions.AddTelegramNotifier"/>.
+    /// </summary>
+    /// <param name="pipelineSource">
+    /// 每次送出呼叫一次,通常是 <c>provider.CreateOzakboyHttpPipelineClient(HttpClientName)</c>。門面的遮罩器與逾時
+    /// 來自管線註冊處,與管線裡的處理器同一份,本類別不另外指定。
+    /// Called once per send, usually <c>provider.CreateOzakboyHttpPipelineClient(HttpClientName)</c>. The facade's
+    /// masker and timeouts come from the pipeline registration — the very ones its handlers use — and this class
+    /// supplies none of its own.
+    /// </param>
+    /// <param name="options">設定。The options.</param>
+    /// <param name="logger">日誌器,可為 <see langword="null"/>。The logger, which may be <see langword="null"/>.</param>
+    /// <param name="timeProvider">時間來源。The time source.</param>
+    internal TelegramNotifier(
+        Func<HttpPipelineClient> pipelineSource,
+        TelegramNotifierOptions options,
+        ILogger<TelegramNotifier>? logger,
+        TimeProvider? timeProvider)
+        : this(FromRegistration(pipelineSource), options, logger, timeProvider)
+    {
+    }
+
+    private TelegramNotifier(
+        Func<SecretMasker, HttpTimeoutOptions, TimeProvider, HttpPipelineClient> pipelineSource,
+        TelegramNotifierOptions options,
+        ILogger? logger,
+        TimeProvider? timeProvider)
     {
         ArgumentNullException.ThrowIfNull(options);
 
@@ -228,7 +288,7 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
         var token = options.BotToken ?? throw new ArgumentException("未設定 BotToken。No BotToken is configured.", nameof(options));
         var chatId = options.ChatId ?? throw new ArgumentException("未設定 ChatId。No ChatId is configured.", nameof(options));
 
-        _clientSource = clientSource;
+        _pipelineSource = pipelineSource;
         _logger = logger ?? NullLogger.Instance;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _redactor = new TokenRedactor(token);
@@ -239,14 +299,10 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
         _maxRetryAfter = options.MaxRetryAfter;
         _maxParts = options.MaxPartsPerMessage;
 
-        // 每一次 HTTP 呼叫就是一次嘗試(重試由本類別的迴圈負責),因此門面的「整體逾時」在這裡就等於單次逾時。
-        // Each HTTP call is one attempt — retrying is this class's loop's job — so the facade's "overall"
-        // timeout is the per-attempt timeout here.
-        _timeouts = new HttpTimeoutOptions
-        {
-            AttemptTimeout = options.RequestTimeout,
-            OverallTimeout = options.RequestTimeout,
-        };
+        // 只有手動建立門面時用得到;經 AddOzakboyHttpPipeline 註冊的門面用註冊處那一份(同樣由 CreateTimeouts 導出)。
+        // Used only when the facade is built by hand; one registered through AddOzakboyHttpPipeline uses the
+        // registration's copy, derived by the same CreateTimeouts.
+        _timeouts = CreateTimeouts(options);
 
         // 排隊與節流交給優先閘門:兩個桶(每聊天的最短間隔、每分鐘的總量)同時滿足才放行,Critical 先於 Info / Warning。
         // 同一則通知的各段依序送出(前一段完成才排下一段),段與段之間可能夾著別的通知。
@@ -321,18 +377,46 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
         _gate.Dispose();
     }
 
-    private static Func<HttpClient> FromFactory(IHttpClientFactory httpClientFactory)
+    /// <summary>
+    /// 由 <see cref="TelegramNotifierOptions.RequestTimeout"/> 導出兩層逾時。註冊管線與手動建立門面用的都是這一份。
+    /// Derives both timeout layers from <see cref="TelegramNotifierOptions.RequestTimeout"/>. Registering the
+    /// pipeline and building the facade by hand both use this.
+    /// </summary>
+    /// <remarks>
+    /// 每一次 HTTP 呼叫就是一次嘗試(重試由本類別的迴圈負責),因此整體逾時就等於單次逾時。
+    /// Each HTTP call is one attempt — retrying is this class's loop's job — so the overall timeout equals the
+    /// per-attempt one.
+    /// </remarks>
+    internal static HttpTimeoutOptions CreateTimeouts(TelegramNotifierOptions options) =>
+        new()
+        {
+            AttemptTimeout = options.RequestTimeout,
+            OverallTimeout = options.RequestTimeout,
+        };
+
+    private static Func<SecretMasker, HttpTimeoutOptions, TimeProvider, HttpPipelineClient> FromFactory(IHttpClientFactory httpClientFactory)
     {
         ArgumentNullException.ThrowIfNull(httpClientFactory);
 
-        return () => httpClientFactory.CreateClient(HttpClientName);
+        return (masker, timeouts, timeProvider) =>
+            new HttpPipelineClient(httpClientFactory.CreateClient(HttpClientName), timeouts, timeProvider, masker);
     }
 
-    private static Func<HttpClient> FromClient(HttpClient httpClient)
+    private static Func<SecretMasker, HttpTimeoutOptions, TimeProvider, HttpPipelineClient> FromClient(HttpClient httpClient)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
 
-        return () => httpClient;
+        return (masker, timeouts, timeProvider) => new HttpPipelineClient(httpClient, timeouts, timeProvider, masker);
+    }
+
+    private static Func<SecretMasker, HttpTimeoutOptions, TimeProvider, HttpPipelineClient> FromRegistration(Func<HttpPipelineClient> pipelineSource)
+    {
+        ArgumentNullException.ThrowIfNull(pipelineSource);
+
+        // 遮罩器與逾時由管線註冊處帶入(與管線裡的處理器同一份),刻意不用通知器自己的那一份。
+        // The masker and timeouts come from the pipeline registration — the ones its handlers use — so the
+        // notifier's own are deliberately ignored.
+        return (_, _, _) => pipelineSource();
     }
 
     /// <summary>
@@ -450,14 +534,14 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
         // anywhere that records only URIs (proxy logs and the like).
         using var request = new HttpRequestMessage(HttpMethod.Post, _sendMessageUri) { Content = content };
 
-        // 明確標為非冪等,即使這條管線上沒有重試處理器:讓「這個請求不可盲目重送」成為看得見的宣告,
-        // 日後有人往管線上加 RetryHandler 時也不會意外被重試。
-        // Declared non-idempotent even though this pipeline has no retry handler: it keeps "do not blindly
-        // resend" a visible statement, and a RetryHandler added to the pipeline later will not retry it by
-        // accident.
+        // 明確標為非冪等。管線上的 RetryHandler 已設為 NoRetry,本來就不會重試;仍然明寫,讓「這個請求不可盲目重送」
+        // 成為看得見的宣告,日後有人改了管線的重試策略也不會意外被重試。
+        // Declared non-idempotent. The pipeline's RetryHandler is set to NoRetry and would not retry anyway; saying
+        // so still keeps "do not blindly resend" a visible statement, so a later change to the pipeline's retry
+        // policy cannot retry it by accident.
         request.AsNonIdempotent();
 
-        var pipeline = new HttpPipelineClient(_clientSource(), _timeouts, _timeProvider);
+        var pipeline = _pipelineSource(_redactor.Masker, _timeouts, _timeProvider);
         var sent = await pipeline.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (sent.IsFailure)
         {
@@ -473,11 +557,11 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
         }
         catch (HttpRequestException exception)
         {
-            return TelegramErrorMapper.FromTransport(HttpErrorMapper.FromException(exception));
+            return TelegramErrorMapper.FromTransport(HttpErrorMapper.FromException(exception, _redactor.Masker));
         }
         catch (OperationCanceledException exception)
         {
-            return TelegramErrorMapper.FromTransport(HttpErrorMapper.FromException(exception));
+            return TelegramErrorMapper.FromTransport(HttpErrorMapper.FromException(exception, _redactor.Masker));
         }
 
         // 只有 Telegram 明確回 "ok": true 才算送達。狀態碼成功但本體不對,多半是中間的代理伺服器在回話。

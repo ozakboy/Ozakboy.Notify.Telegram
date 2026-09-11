@@ -129,7 +129,7 @@ services.AddTelegramNotifier(options =>
 
 **已知限制。**節流用的是固定時間窗:跨越時間窗邊界時,偶爾會有兩則間隔不到 1 秒。Telegram 的每聊天限制有彈性,偶發的 429 由上面的重送機制吸收。本分鐘的配額用完時,`Critical` 也要等到下一分鐘。
 
-**與 `Ozakboy.Http` 的分工。**本套件用它的 `HttpPipelineClient`(把例外收斂為 `Result`,並分辨逾時與取消)與 `WeightedRateLimiter`(建在 `System.Threading.RateLimiting` 上、以 `TimeProvider` 驅動)。不用 `RetryHandler`,理由有三:它讀不到本體裡的 `retry_after`;要讓它重試,`sendMessage` 就得被謊報為冪等;而且在標準順序下,它的重試會繞過節流。所以重試收在 `TelegramNotifier` 的單一迴圈裡。
+**與 `Ozakboy.Http` 的分工。**具名用戶端以 `AddOzakboyHttpPipeline`(`Ozakboy.Http` 0.3.0)組成,由它提供遮罩日誌、權杖遮罩器與逾時;`HttpPipelineClient` 把例外收斂為 `Result`,並分辨逾時與取消;節流用 `WeightedRateLimiter`(建在 `System.Threading.RateLimiting` 上、以 `TimeProvider` 驅動),放在通知器自己的優先閘門裡。管線的限流段關閉,`RetryHandler` 設為 `RetryPolicy.NoRetry`。重試收在 `TelegramNotifier` 的單一迴圈裡,理由有三:`RetryHandler` 讀不到本體裡的 `retry_after`;要讓它重試,`sendMessage` 就得被謊報為冪等;而管線的限流器依抵達順序放行,給不了 `Critical` 優先,也無法讓 429 暫停由整個通知器共用。每一次送出(含重送)都重新在閘門排隊、各付一份額度,與 0.3.0 管線的原則相同。
 
 ---
 
@@ -139,10 +139,10 @@ services.AddTelegramNotifier(options =>
 
 | 位址可能露出的地方 | 本套件的處置 |
 | --- | --- |
-| `IHttpClientFactory` 預設的 `LogicalHandler` / `ClientHandler` 日誌:在 Information 層級寫出完整位址,還放進 scope;.NET 只遮 query。 | 對這個具名用戶端呼叫 `RemoveAllLoggers()`。 |
-| `Ozakboy.Http` 的 `SanitizingLoggingHandler`:只遮 query 的值,並把原始例外交給日誌器。 | 這個用戶端不使用它。`TelegramNotifier` 只記等級、第幾段、錯誤代碼與耗時,絕不記位址、chat id 或訊息內容。 |
-| 由傳輸層例外組出的錯誤訊息,以及 `Error.Exception`。 | 每個回傳的錯誤都經過遮罩:代碼、訊息、每一筆資料。例外一律換成 `RedactedException`,保留遮罩後的 `ToString()`,不帶內層例外。 |
-| 回應本體的回聲。 | 錯誤只帶 Telegram 的 `description`(已截斷、已遮罩),不帶本體。 |
+| `IHttpClientFactory` 預設的 `LogicalHandler` / `ClientHandler` 日誌:在 Information 層級寫出完整位址,還放進 scope;.NET 只遮 query。 | `AddOzakboyHttpPipeline` 會對這個具名用戶端移除它們。 |
+| `Ozakboy.Http` 的 `SanitizingLoggingHandler`(管線的一段):記錄位址,失敗時也記錄例外。 | 權杖與冒號後的祕密段登記在 `HttpPipelineOptions.KnownSecrets`,記下的位址與例外文字都經過遮罩,交給日誌器的是 `SanitizedException` 而不是原始例外。本體日誌保持關閉,因為本體裡是 chat id 與訊息內容。`TelegramNotifier` 自己的日誌只記等級、第幾段、錯誤代碼與耗時。 |
+| 由傳輸層例外組出的錯誤訊息,以及 `Error.Exception`。 | 門面以 `CreateOzakboyHttpPipelineClient` 建立,用同一個遮罩器遮罩;每個回傳的錯誤在通知器出口再遮一次:代碼、訊息、每一筆資料。例外一律換成 `RedactedException`,保留遮罩後的 `ToString()`,不帶內層例外。 |
+| 回應本體的回聲。管線不會遮它:4xx 對管線而言是成功取得回應。 | 錯誤只帶 Telegram 的 `description`(已截斷、已遮罩),不帶本體。通知器在管線遮罩器之外仍保留自己的出口遮罩,就是為了這一類。 |
 
 遮罩同時登記完整權杖與冒號後的段落:冒號可能被百分比編碼,祕密段則不受任何編碼影響。
 

@@ -148,11 +148,15 @@ retry layer from multiplying the attempts.
 out less than a second apart. Telegram's per-chat limit is soft, and an occasional 429 is absorbed by the resend
 logic above. When the minute's quota is spent, a `Critical` also waits for the next minute.
 
-**Division of labour with `Ozakboy.Http`.** This package uses `HttpPipelineClient`, which folds exceptions into `Result`
-and tells timeouts from cancellation, and `WeightedRateLimiter`, which is built on `System.Threading.RateLimiting` and runs on `TimeProvider`.
-It does not use `RetryHandler`, for three reasons. `RetryHandler` cannot read the body's `retry_after`. `sendMessage` would have to be falsely labelled
-idempotent before `RetryHandler` retried it. And in the standard order its retries would bypass the throttle. So retries live in one loop in
-`TelegramNotifier`.
+**Division of labour with `Ozakboy.Http`.** The named client is built with `AddOzakboyHttpPipeline` (`Ozakboy.Http`
+0.3.0), which supplies masked logging, the token masker, and the timeouts. `HttpPipelineClient` folds exceptions into
+`Result` and tells timeouts from cancellation. Throttling uses `WeightedRateLimiter`, built on
+`System.Threading.RateLimiting` and running on `TimeProvider`, inside the notifier's own priority gate. The pipeline's
+rate limiting is off, and its `RetryHandler` is set to `RetryPolicy.NoRetry`. Retries stay in one loop in
+`TelegramNotifier`, for three reasons. `RetryHandler` cannot read the body's `retry_after`. `sendMessage` would have to
+be falsely labelled idempotent before `RetryHandler` retried it. And the pipeline's limiter admits in arrival order, so
+it cannot put a `Critical` first or share a 429 pause across the notifier. Every send, resends included, queues at the
+gate again and pays for its own slot, the same rule the 0.3.0 pipeline follows.
 
 ---
 
@@ -164,10 +168,10 @@ place the URI can surface:
 
 | Where the URI can surface | What the package does |
 | --- | --- |
-| `IHttpClientFactory`'s default `LogicalHandler` / `ClientHandler` logging. It logs the full URI at Information level, puts it in a scope, and .NET redacts only the query. | `RemoveAllLoggers()` on the named client. |
-| `Ozakboy.Http`'s `SanitizingLoggingHandler`. It masks only query values and passes the raw exception to the logger. | Not used on this client. `TelegramNotifier` logs only the level, part number, error code, and timing. It never logs the URI, the chat id, or the text. |
-| Error messages built from transport exceptions, and `Error.Exception`. | Every returned error is redacted: the code, the message, and every data entry. The exception is always replaced by `RedactedException`, which keeps a redacted `ToString()` and holds no inner exception. |
-| Response bodies echoing content. | Errors carry only Telegram's `description` (truncated and redacted), never the body. |
+| `IHttpClientFactory`'s default `LogicalHandler` / `ClientHandler` logging. It logs the full URI at Information level, puts it in a scope, and .NET redacts only the query. | `AddOzakboyHttpPipeline` removes it on the named client. |
+| `Ozakboy.Http`'s `SanitizingLoggingHandler`, part of the pipeline. It logs the URI, and the exception on failure. | The token and its post-colon secret are registered in `HttpPipelineOptions.KnownSecrets`, so the logged URI and exception text are masked, and the logger gets a `SanitizedException`, never the original. Body logging stays off, because the body holds the chat id and the text. `TelegramNotifier`'s own log lines carry only the level, part number, error code, and timing. |
+| Error messages built from transport exceptions, and `Error.Exception`. | The facade comes from `CreateOzakboyHttpPipelineClient` and masks with the same masker. Every returned error is then redacted again at the notifier's exit: the code, the message, and every data entry. The exception is always replaced by `RedactedException`, which keeps a redacted `ToString()` and holds no inner exception. |
+| Response bodies echoing content. The pipeline never masks these, because a 4xx is a successful response as far as it is concerned. | Errors carry only Telegram's `description` (truncated and redacted), never the body. This is why the notifier keeps its own exit redaction on top of the pipeline's masker. |
 
 Redaction registers both the full token and the part after the colon. The colon may be percent-encoded, but the
 secret part never changes under encoding.

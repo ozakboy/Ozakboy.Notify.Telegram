@@ -61,10 +61,23 @@ internal sealed class NotifierHarness : IDisposable
         Handler = new ScriptedTelegramHandler(responder, Clock);
         Logs = new LogCapture();
         _client = new HttpClient(Handler) { Timeout = Timeout.InfiniteTimeSpan };
+
+        // 節流的時間窗邊界固定在通知器建立的那一刻起算(限流器在建構式裡就建好了),之後每 MinimumInterval 一個。
+        // 記下這一刻,測試才問得出「兩則落在同一個窗還是不同窗」。
+        // The throttling windows are anchored at the moment the notifier is created — the limiter is built in its
+        // constructor — and recur every MinimumInterval. Recording that instant is what lets a test ask whether two
+        // messages fell in the same window or different ones.
+        StartedAt = Clock.GetUtcNow();
         Notifier = new TelegramNotifier(_client, TestValues.Options(configure), new CapturingLogger<TelegramNotifier>(Logs), Clock);
     }
 
     public FakeTimeProvider Clock { get; }
+
+    /// <summary>
+    /// 通知器建立的假時鐘時刻,也就是節流時間窗的起算點。
+    /// The fake-clock instant the notifier was created at, which is where the throttling windows start.
+    /// </summary>
+    public DateTimeOffset StartedAt { get; }
 
     public ScriptedTelegramHandler Handler { get; }
 

@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Ozakboy.Http.Logging;
 using Ozakboy.Notify.Telegram.Tests.TestSupport;
 
 namespace Ozakboy.Notify.Telegram.Tests;
@@ -22,11 +23,16 @@ namespace Ozakboy.Notify.Telegram.Tests;
 /// not a guarantee, and the guarantee is what these tests check.
 /// </para>
 /// <para>
-/// 已做過的故意失敗驗證(見回報):拿掉 <c>RemoveAllLoggers()</c> 後所有情境變紅(factory 預設日誌寫出位址);
-/// 讓遮罩器保留原始例外後,帶位址的連線例外情境變紅。
-/// Deliberate-failure checks carried out (see the report): removing <c>RemoveAllLoggers()</c> turns every
-/// scenario red (the factory's default logging writes the URI); letting the redactor keep the original exception
-/// turns the URI-bearing transport-exception scenarios red.
+/// 已做過的故意失敗驗證(見回報)。升上 <c>Ozakboy.Http</c> 0.3.0 時:註冊管線時不把權杖登記進 <c>KnownSecrets</c>,
+/// 本檔 13 條裡有 12 條變紅(管線的日誌處理器寫出未遮罩的位址),包括 <c>PipelineLogging_…</c> 那一條。
+/// 0.1.0 開發時:拿掉 <c>RemoveAllLoggers()</c> 後所有情境變紅(factory 預設日誌寫出位址;那個呼叫現在由
+/// <c>AddOzakboyHttpPipeline</c> 負責);讓遮罩器保留原始例外後,帶位址的連線例外情境變紅。
+/// Deliberate-failure checks carried out (see the report). While moving to <c>Ozakboy.Http</c> 0.3.0: leaving the
+/// token out of the pipeline's <c>KnownSecrets</c> turns 12 of the 13 tests in this file red (the pipeline's
+/// logging handler writes the URI unmasked), <c>PipelineLogging_…</c> among them. During 0.1.0: removing
+/// <c>RemoveAllLoggers()</c> turned every scenario red (the factory's default logging writes the URI; that call is
+/// now made by <c>AddOzakboyHttpPipeline</c>); letting the redactor keep the original exception turned the
+/// URI-bearing transport-exception scenarios red.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -69,8 +75,9 @@ public sealed class CredentialLeakTests
             };
         });
 
-        // 只替換最內層的處理器,factory 自己的日誌處理器(若沒被移除)仍然在它外面。
-        // Only the innermost handler is replaced; the factory's own logging handlers, if not removed, still wrap it.
+        // 只替換最內層的處理器:Ozakboy.Http 管線的日誌處理器,以及 factory 自己的日誌處理器(若沒被移除),仍然在它外面。
+        // Only the innermost handler is replaced: the Ozakboy.Http pipeline's logging handler, and the factory's own
+        // logging handlers if not removed, still wrap it.
         services.AddHttpClient(TelegramNotifier.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => handler);
 
         await using var provider = services.BuildServiceProvider();
@@ -114,6 +121,81 @@ public sealed class CredentialLeakTests
             var at = surface.IndexOf(TestValues.TokenSecretPart, StringComparison.Ordinal);
             Assert.AreEqual(-1, at, $"權杖出現在第 {i} 個表面的位置 {at}。The token appeared in surface {i} at offset {at}: {Describe(surface)}");
             Assert.IsFalse(surface.Contains(TestValues.ChatId, StringComparison.Ordinal) && !IsErrorSurface(i, capture), $"chat id 不應出現在日誌第 {i} 個表面。The chat id should not appear in log surface {i}.");
+        }
+    }
+
+    /// <summary>
+    /// 權杖在請求位址裡、傳輸層擲出帶位址的例外時,<c>Ozakboy.Http</c> 管線的日誌(送出的位址、失敗與它的例外)
+    /// 與回傳的錯誤都不含權杖字面值。釘住的是 0.3.0 的機制:權杖登記進 <c>KnownSecrets</c>,管線的日誌處理器
+    /// 與門面(<c>CreateOzakboyHttpPipelineClient</c>)共用那一個遮罩器。
+    /// With the token in the request URI and a transport exception that echoes the URI, neither the
+    /// <c>Ozakboy.Http</c> pipeline's logs (the outgoing URI, the failure and its exception) nor the returned error
+    /// contain the token literal. It pins the 0.3.0 mechanism: the token is registered in <c>KnownSecrets</c>, and the
+    /// pipeline's logging handler and the facade (<c>CreateOzakboyHttpPipelineClient</c>) share that one masker.
+    /// </summary>
+    [TestMethod]
+    public async Task PipelineLogging_TransportExceptionWithTokenInUri_NeitherLogsNorErrorCarryToken()
+    {
+        var capture = new LogCapture();
+        var clock = new FakeTimeProvider();
+        var handler = new ScriptedTelegramHandler(
+            (request, _, _) => Task.FromException<HttpResponseMessage>(
+                new HttpRequestException(
+                    $"An error occurred while sending the request to {request.RequestUri}.",
+                    new IOException($"Unable to write data to the transport connection for {request.RequestUri}."))),
+            clock);
+
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(clock);
+        services.AddLogging(logging => logging
+            .SetMinimumLevel(LogLevel.Trace)
+            .AddProvider(new CapturingLoggerProvider(capture)));
+        services.AddTelegramNotifier(options =>
+        {
+            options.BotToken = TestValues.BotToken;
+            options.ChatId = TestValues.ChatId;
+            options.RequestTimeout = TimeSpan.FromMinutes(10);
+            options.ThrottleWaitLimit = TimeSpan.FromMinutes(10);
+            options.TransientRetry = RetryPolicy.NoRetry;
+        });
+        services.AddHttpClient(TelegramNotifier.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => handler);
+
+        await using var provider = services.BuildServiceProvider();
+        var notifier = provider.GetRequiredService<ITelegramNotifier>();
+
+        var result = await FakeClockRunner.RunAsync(clock, notifier.SendAsync(TelegramNotification.Critical("probe")));
+
+        // 前提:位址確實帶著權杖,管線的日誌處理器也確實記下了位址與這次失敗 —— 否則底下的斷言什麼也沒證明。
+        // 只送一次也順帶確認管線的重試處理器(NoRetry)沒有在通知器的重送之外再重試。
+        // Preconditions: the URI really carries the token, and the pipeline's logging handler really recorded the
+        // URI and the failure; otherwise the assertions below prove nothing. A single call also confirms that the
+        // pipeline's retry handler (NoRetry) did not retry on top of the notifier's own resending.
+        Assert.AreEqual(1, handler.CallCount, "應只送出一次。Exactly one call is expected.");
+        Assert.IsTrue(handler.Requests[0].Uri.Contains(TestValues.BotToken, StringComparison.Ordinal), "請求位址應帶權杖。The request URI should carry the token.");
+        var pipelineLogs = capture.Entries
+            .Where(entry => string.Equals(entry.Category, typeof(SanitizingLoggingHandler).FullName, StringComparison.Ordinal))
+            .ToList();
+        Assert.IsTrue(
+            pipelineLogs.Any(entry => entry.Level == LogLevel.Debug && entry.Message.Contains("/sendMessage", StringComparison.Ordinal)),
+            "管線日誌應記下(遮罩後的)送出位址。The pipeline log should record the (masked) outgoing URI.");
+        Assert.IsTrue(
+            pipelineLogs.Any(entry => entry.Level == LogLevel.Error),
+            "管線日誌應記下這次失敗。The pipeline log should record the failure.");
+
+        Assert.AreEqual(TelegramErrorCodes.Network, result.Error!.Code);
+        Assert.IsTrue(result.Error.TryGetData(TelegramErrorDataKeys.TransportErrorCode, out var transportCode));
+        Assert.AreEqual("http.network", transportCode);
+        AssertNoRawException(result.Error);
+        Assert.AreEqual(
+            typeof(HttpRequestException).FullName,
+            ((RedactedException)result.Error.Exception!).OriginalExceptionType,
+            "替身應保留原始例外型別,而不是 Ozakboy.Http 替身自己的型別。The stand-in should keep the original type, not that of Ozakboy.Http's stand-in.");
+
+        var surfaces = capture.Surfaces.Concat(ErrorSurfaces(result.Error)).ToList();
+        for (var i = 0; i < surfaces.Count; i++)
+        {
+            Assert.IsFalse(surfaces[i].Contains(TestValues.BotToken, StringComparison.Ordinal), $"完整權杖出現在第 {i} 個表面。The full token appeared in surface {i}: {Describe(surfaces[i])}");
+            Assert.IsFalse(surfaces[i].Contains(TestValues.TokenSecretPart, StringComparison.Ordinal), $"權杖祕密段出現在第 {i} 個表面。The token secret appeared in surface {i}: {Describe(surfaces[i])}");
         }
     }
 

@@ -265,10 +265,33 @@ public sealed class TelegramNotifierRetryTests
 
         var result = await harness.SendAsync(NotificationLevel.Info, "x");
 
-        // 沒有 retry_after 的 429 立即重送,但仍要付節流額度,不會在同一秒內撞第二次。
-        // A 429 without retry_after is resent at once, but still pays for a throttling slot, so it does not hit
-        // again within the same second.
+        // 沒有 retry_after 的 429 立即重送,但仍要付節流額度:它不能和前一則落在同一個節流時間窗裡。
+        // 斷言「落在後一個時間窗」而不是「相隔至少一秒」:節流用的是固定時間窗,邊界從通知器建立的那一刻起算,
+        // 第一則若沒有剛好落在邊界上,下一個邊界本來就不滿一秒 —— 那是 README 寫明的已知限制,
+        // 不是重送沒有付額度。寫成「相隔至少一秒」時,只有第一則剛好落在起始邊界才成立,
+        // 於是會隨著冷啟動多花的時間偶發變紅(假時鐘在第一則送出前就被推進了)。
+        // A 429 without retry_after is resent at once, but still pays for a throttling slot: it cannot fall in the
+        // same throttling window as the message before it. The assertion is "in a later window" rather than "at
+        // least a second apart" because throttling uses fixed windows anchored at the notifier's construction:
+        // unless the first message lands exactly on a boundary, the next boundary is less than a second away — the
+        // known limitation stated in the README, not a resend that skipped its slot. Phrased as "at least a second
+        // apart", it held only when the first message landed on the opening boundary, and went red at random as
+        // cold-start time pushed the fake clock on before the first message went out.
         Assert.IsTrue(result.IsSuccess, result.ToString());
-        Assert.IsTrue(harness.Handler.Requests[1].At - harness.Handler.Requests[0].At >= TimeSpan.FromSeconds(1));
+        Assert.AreEqual(2, harness.Handler.CallCount);
+
+        var firstWindow = WindowIndex(harness, harness.Handler.Requests[0].At);
+        var resendWindow = WindowIndex(harness, harness.Handler.Requests[1].At);
+        Assert.IsTrue(
+            resendWindow > firstWindow,
+            $"重送必須落在後一個節流時間窗:第一則在第 {firstWindow} 窗,重送在第 {resendWindow} 窗。The resend must fall in a later throttling window; got {firstWindow} and {resendWindow}.");
     }
+
+    /// <summary>
+    /// 這個時間點落在第幾個節流時間窗。窗從通知器建立的那一刻起算,每個 <c>MinimumInterval</c>(測試預設 1 秒)一個。
+    /// Which throttling window an instant falls in. Windows start when the notifier is created, one per
+    /// <c>MinimumInterval</c> (one second in these tests).
+    /// </summary>
+    private static long WindowIndex(NotifierHarness harness, DateTimeOffset at) =>
+        (at - harness.StartedAt).Ticks / TimeSpan.FromSeconds(1).Ticks;
 }

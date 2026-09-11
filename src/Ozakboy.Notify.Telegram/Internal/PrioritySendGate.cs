@@ -40,6 +40,23 @@ namespace Ozakboy.Notify.Telegram.Internal;
 /// slot after a 429 pause always goes to a Critical. Each queue is first-in first-out, so Info and Warning
 /// messages never overtake one another.
 /// </para>
+/// <para>
+/// <b>與 <c>Ozakboy.Http</c> 管線限流的關係。</b>這個閘門直接用 <see cref="WeightedRateLimiter"/>,Telegram 用戶端的管線則把
+/// 限流段關掉:管線的限流器依抵達順序放行,給不了 Critical 優先,也沒有整個通知器共用的 429 暫停;兩邊都開只會重複節流。
+/// 0.3.0 起管線的原則是「重試在限流之外,每次嘗試各付權重」、「本地限流逾時不重試」、「單次逾時不計排隊時間」,
+/// 這裡三條都本來就成立:通知器的每一次送出(含重送)都重新經過這個閘門、各付一份額度;排不到額度的
+/// <see cref="TelegramErrorCodes.Throttled"/> 直接交回、不進重送;在這裡排隊的時間發生在 HTTP 呼叫之前,不計入
+/// <see cref="TelegramNotifierOptions.RequestTimeout"/>。
+/// <b>How this relates to the <c>Ozakboy.Http</c> pipeline's rate limiting.</b> This gate uses
+/// <see cref="WeightedRateLimiter"/> directly, and the Telegram client's pipeline has its rate-limiting section off:
+/// the pipeline's limiter admits in arrival order, cannot give a Critical priority, and has no 429 pause shared
+/// across the notifier, so running both would only throttle twice. Since 0.3.0 the pipeline's rules are "retry
+/// outside rate limiting, so every attempt pays its own weight", "a local rate-limit timeout is not retried", and
+/// "the attempt timeout does not count queueing". All three already hold here: every send the notifier makes,
+/// resends included, passes this gate again and pays for its own slot; a <see cref="TelegramErrorCodes.Throttled"/>
+/// failure is handed straight back and never resent; and time queued here comes before the HTTP call, so it does not
+/// count towards <see cref="TelegramNotifierOptions.RequestTimeout"/>.
+/// </para>
 /// </remarks>
 internal sealed class PrioritySendGate : IDisposable
 {

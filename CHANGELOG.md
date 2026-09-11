@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-09-12
 
-First release. Targets `net10.0`. Depends only on first-party Microsoft packages and `Ozakboy.Http` 0.2.0,
+First release. Targets `net10.0`. Depends only on first-party Microsoft packages and `Ozakboy.Http` 0.3.0,
 `Ozakboy.Core.Abstractions` 0.3.0, and `Ozakboy.Security` 0.1.1. Replaces `Telegram.Bot` for alerting.
 
-首次發佈。目標框架 `net10.0`,只相依 Microsoft 官方套件與 `Ozakboy.Http` 0.2.0、`Ozakboy.Core.Abstractions` 0.3.0、
+首次發佈。目標框架 `net10.0`,只相依 Microsoft 官方套件與 `Ozakboy.Http` 0.3.0、`Ozakboy.Core.Abstractions` 0.3.0、
 `Ozakboy.Security` 0.1.1。用於告警推播,取代 `Telegram.Bot`。
 
 ### Added
@@ -53,20 +53,38 @@ First release. Targets `net10.0`. Depends only on first-party Microsoft packages
 - **Error codes** in `TelegramErrorCodes` for 401, 403, `chat not found`, chat migration (with `migrateToChatId`), other 400s, 404,
   429, 5xx, timeout, network, cancellation, local throttling, and unconfirmed delivery. **Data keys** are in `TelegramErrorDataKeys`.
   各種失敗皆有可辨識的錯誤代碼,暫時性判斷正確(401 / 403 不是暫時性)。
-- **`AddTelegramNotifier(options => …)`**: validates at registration. It registers a named `HttpClient` with an
-  infinite `HttpClient.Timeout` and with `IHttpClientFactory`'s default logging removed.
-  註冊時即驗證設定;具名用戶端移除 factory 預設日誌。
+- **`AddTelegramNotifier(options => …)`**: validates at registration. It builds the named `HttpClient` with
+  `Ozakboy.Http`'s `AddOzakboyHttpPipeline`, which sets an infinite `HttpClient.Timeout` and removes
+  `IHttpClientFactory`'s default logging.
+  註冊時即驗證設定;具名用戶端以 `AddOzakboyHttpPipeline` 組成,由它移除 factory 預設日誌。
 - **`TelegramNotifierOptions.Validate()`**: a token shape check and a chat-id check, with https-only base addresses (loopback http
   allowed). Messages never echo the token. There is no default token.
   權杖格式粗檢、chat id 檢查、只允許 https;訊息絕不回述權杖;沒有預設權杖。
 
+### Changed
+
+- **Technical: built on `Ozakboy.Http` 0.3.0.** The named client is now assembled with `AddOzakboyHttpPipeline`, with
+  signing and rate limiting off and its retry handler set to `RetryPolicy.NoRetry`. The token and its post-colon
+  secret go into `HttpPipelineOptions.KnownSecrets`, and the facade comes from `CreateOzakboyHttpPipelineClient`. This
+  replaces the package's own `RemoveAllLoggers()` and infinite-timeout setup and its hand-built facade. The pipeline's
+  masked logging handler now runs on this client and logs the URI with the token masked. The exit redaction
+  (`RedactedException`) stays, for what the pipeline never sees: Telegram's `description` and errors the notifier
+  builds itself. The priority gate and the resend loop are unchanged. The rules the 0.3.0 pipeline introduced (every
+  attempt pays its own weight, local rate-limit timeouts are not retried, queueing is not attempt time) already held
+  for them.
+  技術改進:改用 `Ozakboy.Http` 0.3.0。具名用戶端改以 `AddOzakboyHttpPipeline` 組成(簽章、限流關閉,重試設為 `NoRetry`),
+  權杖登記進 `KnownSecrets`,門面改由 `CreateOzakboyHttpPipelineClient` 建立,取代本套件自行移除預設日誌、自設逾時與手動建立門面的做法;
+  管線的遮罩日誌處理器現在會記下已遮罩權杖的位址。出口遮罩(`RedactedException`)保留,負責管線看不到的來源。
+  優先閘門與重送迴圈不變:0.3.0 管線的新原則(每次嘗試各付權重、本地限流逾時不重試、排隊不計入單次逾時)在這裡本來就成立。
+
 ### Security
 
-- The bot token sits in the URL path, where query-parameter masking cannot reach it. The notifier removes the
-  factory's default request logging, never logs request URIs, the chat id, or message text, and redacts every returned
-  error: code, message, and each data entry. Exceptions are always replaced by `RedactedException`, which keeps a
-  redacted `ToString()` and holds no inner exception. Both the full token and its post-colon secret are registered for
-  redaction. A credential-leak test covers success, 400/401/403, 429, 5xx, timeouts, and transport exceptions
-  whose messages contain the full URI.
-  權杖位於網址路徑。本套件移除預設日誌、不記錄位址、遮罩所有回傳錯誤,例外一律換成不帶內層例外的替身;
-  外洩測試涵蓋所有失敗路徑,包括訊息裡直接帶完整位址的例外。
+- The bot token sits in the URL path, where query-parameter masking cannot reach it. The pipeline removes the
+  factory's default request logging and masks the token in the URIs and exceptions it logs, because the token is
+  registered on the client's masker. The notifier never logs the chat id or message text, and it redacts every returned
+  error again at its exit: code, message, and each data entry. Exceptions are always replaced by `RedactedException`,
+  which keeps a redacted `ToString()` and holds no inner exception. Both the full token and its post-colon secret are
+  registered for redaction. A credential-leak test covers success, 400/401/403, 429, 5xx, timeouts, and transport
+  exceptions whose messages contain the full URI.
+  權杖位於網址路徑。管線移除預設日誌,並以登記了權杖的遮罩器記錄位址與例外;通知器不記 chat id 與訊息內容,
+  所有回傳錯誤在出口再遮一次,例外一律換成不帶內層例外的替身;外洩測試涵蓋所有失敗路徑,包括訊息裡直接帶完整位址的例外。
