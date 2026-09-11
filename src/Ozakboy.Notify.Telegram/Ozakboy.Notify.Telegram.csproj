@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Ozakboy.Notify.Telegram</PackageId>
+    <AssemblyName>Ozakboy.Notify.Telegram</AssemblyName>
+    <RootNamespace>Ozakboy.Notify.Telegram</RootNamespace>
+
+    <Title>Ozakboy.Notify.Telegram — 分級、節流、429 重送且權杖不外洩的 Telegram 告警推播</Title>
+    <Description>建構在 Ozakboy.Http 之上的 Telegram Bot 告警推播,取代 Telegram.Bot:訊息分級(Info / Warning / Critical)顯示在開頭、超過 4096 字元依行切分且不切斷字素、純文字送出不因跳脫字元被拒、依 System.Threading.RateLimiting 做每聊天節流、429 依回應中的 retry_after 等待後重送、暫時性失敗「至少送達一次」。Bot 權杖位於網址路徑,本套件移除 HttpClientFactory 預設日誌、不記錄請求位址,並在所有回傳的錯誤(訊息、資料、例外)上遮罩權杖。所有預期失敗以 Result 表達。除 Microsoft 官方套件與 Ozakboy.* 自研套件外,零第三方相依。Telegram Bot alerting built on Ozakboy.Http, replacing Telegram.Bot: levelled messages, line-aware splitting at 4096 characters that never breaks a grapheme, plain-text delivery that cannot be rejected over escaping, per-chat throttling on System.Threading.RateLimiting, 429 handling that honours retry_after, and at-least-once retry of transient failures. The bot token lives in the URL path, so the package removes HttpClientFactory's default request logging, never logs request URIs, and redacts the token from every error it returns.</Description>
+    <PackageTags>ozakboy;telegram;telegram-bot;bot-api;notification;notifications;alert;alerting;throttling;rate-limiting;retry;retry-after;redaction;masking;result;trading;dotnet;csharp</PackageTags>
+
+    <PackageProjectUrl>https://github.com/ozakboy/Ozakboy.Notify.Telegram</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ozakboy/Ozakboy.Notify.Telegram</RepositoryUrl>
+
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- 內部型別(訊息切分、回應解析、權杖遮罩)需要直接測試,它們不屬於公開契約。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ozakboy.Notify.Telegram.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\logo.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <!--
+    相依政策:只允許 .NET BCL、Microsoft 官方套件與 Ozakboy.* 自研套件,判定看「遞移相依」而非套件名稱。
+    Ozakboy.Http 提供 HttpPipelineClient(例外收斂為 Result、逾時與呼叫端取消的區分)與 WeightedRateLimiter
+    (建在官方 System.Threading.RateLimiting 上、以 TimeProvider 驅動);Ozakboy.Security 提供權杖遮罩。
+    Dependency policy: only the .NET BCL, first-party Microsoft packages, and Ozakboy.* packages are allowed,
+    judged by the transitive graph rather than by package name. Ozakboy.Http supplies HttpPipelineClient
+    (exceptions folded into Result, timeouts told apart from caller cancellation) and WeightedRateLimiter (built
+    on the official System.Threading.RateLimiting and driven by TimeProvider); Ozakboy.Security supplies the
+    token masking.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Ozakboy.Core.Abstractions" Version="0.3.0" />
+    <PackageReference Include="Ozakboy.Http" Version="0.2.0" />
+    <PackageReference Include="Ozakboy.Security" Version="0.1.1" />
+  </ItemGroup>
+
+  <!--
+    刻意不引用 Microsoft.SourceLink.GitHub 套件,與其他 Ozakboy.* 套件一致。
+    自 .NET 8 起 SourceLink 已內建於 SDK,設定 PublishRepositoryUrl 與 EmbedUntrackedSources
+    (見 Directory.Build.props)即可;外掛套件反而會帶進有安全通報的相依,
+    在 TreatWarningsAsErrors 之下讓「還原」階段就直接失敗。
+  -->
+
+</Project>
