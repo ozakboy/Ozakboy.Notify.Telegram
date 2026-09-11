@@ -95,26 +95,23 @@ internal static class TelegramErrorMapper
     }
 
     /// <summary>
-    /// 把本地節流的失敗改標成本套件的代碼。
-    /// Relabels a local throttling failure with this package's code.
+    /// 在本地節流佇列裡等超過上限。訊息沒有送出。
+    /// Waited in the local throttling queue past the limit. Nothing was sent.
     /// </summary>
-    public static Error FromThrottle(Error limiterError)
-    {
-        ArgumentNullException.ThrowIfNull(limiterError);
-
-        if (limiterError.Category == ErrorCategory.Cancelled)
-        {
-            return new Error(TelegramErrorCodes.Cancelled, "等待發送額度時被取消,訊息未送出。Cancelled while waiting for a send slot; the message was not sent.", ErrorCategory.Cancelled)
-            {
-                Exception = limiterError.Exception,
-            }.WithData(TelegramErrorDataKeys.TransportErrorCode, limiterError.Code);
-        }
-
-        return new Error(
+    public static Error ThrottleTimedOut(TimeSpan waitLimit) =>
+        new(
             TelegramErrorCodes.Throttled,
-            $"本地節流在等待上限內排不到發送額度,訊息未送出。Local throttling found no send slot within the wait limit; the message was not sent. {limiterError.Message}",
-            ErrorCategory.RateLimited).WithData(TelegramErrorDataKeys.TransportErrorCode, limiterError.Code);
-    }
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"本地節流在 {waitLimit} 內排不到發送額度,訊息未送出。Local throttling found no send slot within {waitLimit}; the message was not sent."),
+            ErrorCategory.RateLimited);
+
+    /// <summary>
+    /// 排隊期間被取消。訊息沒有送出。
+    /// Cancelled while queued. Nothing was sent.
+    /// </summary>
+    public static Error CancelledWhileQueued() =>
+        new(TelegramErrorCodes.Cancelled, "等待發送額度時被取消,訊息未送出。Cancelled while waiting for a send slot; the message was not sent.", ErrorCategory.Cancelled);
 
     /// <summary>
     /// 先前的 429 要求暫停、而剩餘時間超過願意等待的上限時的錯誤。訊息沒有送出。

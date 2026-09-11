@@ -14,11 +14,14 @@ namespace Ozakboy.Notify.Telegram;
 /// it today, deal with it now.
 /// </para>
 /// <para>
-/// 等級只影響訊息開頭的標記,不影響送出方式:<see cref="Critical"/> 不會插隊、也不會繞過節流 ——
-/// 繞過節流只會換來 Telegram 的 429,讓它比排隊更晚送達。
-/// The level only changes the marker at the start of the message, not how it is sent: a
-/// <see cref="Critical"/> message does not jump the queue or bypass throttling, because bypassing throttling
-/// only earns a 429 from Telegram and arrives later than queueing would have.
+/// <see cref="Critical"/> 走優先通道:在節流佇列裡永遠排在所有 <see cref="Info"/> / <see cref="Warning"/> 前面,
+/// 下一個可用額度就是它的(需求 FR-12:Critical 5 秒內送達)。但它<b>不會繞過節流</b>,也要等 429 暫停結束 ——
+/// 繞過節流只會換來 Telegram 的 429,讓它比排隊更晚送達。Info 與 Warning 之間沒有先後,依抵達順序。
+/// A <see cref="Critical"/> message takes the priority lane: it is always ahead of every queued
+/// <see cref="Info"/> and <see cref="Warning"/> and gets the next free slot (FR-12: Critical within 5 seconds).
+/// It does <b>not</b> bypass throttling or a 429 pause, though: bypassing throttling only earns a 429 from
+/// Telegram and arrives later than queueing would. Info and Warning have no precedence over each other; they go
+/// in arrival order.
 /// </para>
 /// </remarks>
 public enum NotificationLevel

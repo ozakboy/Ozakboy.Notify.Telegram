@@ -110,8 +110,12 @@ services.AddTelegramNotifier(options =>
 ## Messages
 
 - **Levels.** `Info`, `Warning`, and `Critical` appear first as `[INFO]`, `[WARNING]`, and `[CRITICAL]`. With three levels,
-  each one calls for a different reaction: glance, handle today, handle now. The level does not change how a message is sent. `Critical` does not
-  skip the throttle, because skipping it earns a 429 and arrives later.
+  each one calls for a different reaction: glance, handle today, handle now.
+- **Critical goes first.** A queued `Critical` is always ahead of every queued `Info` and `Warning`. It leaves on the
+  next free throttling slot, at most one `MinimumInterval` away, so a critical alert can arrive within five seconds.
+  Priority changes the queue order only. `Critical` still pays for a slot under the per-chat and per-minute limits,
+  and still waits out a 429 pause, because rushing earns a 429 and arrives later. The first message out after a pause
+  is the `Critical`. A message already being sent is not interrupted. `Info` and `Warning` keep their arrival order.
 - **Plain text.** No `parse_mode`. Every character shows as written. Do not escape anything.
 - **Splitting.** Content over 4096 UTF-16 code units is split on line breaks. Each part is marked `(1/3)`, `(2/3)`, and so on. A single line
   that is too long is cut on a grapheme boundary, so emoji, ZWJ sequences, and combining marks stay whole. Parts go
@@ -139,6 +143,10 @@ second glance. A lost alert can mean nobody knows the system has stopped trading
 
 Failures the package has already retried come back as `ErrorCategory.Exhausted`, which is not transient. That keeps your own
 retry layer from multiplying the attempts.
+
+**Known limitations.** The throttle uses fixed time windows. Across a window boundary, two messages can occasionally go
+out less than a second apart. Telegram's per-chat limit is soft, and an occasional 429 is absorbed by the resend
+logic above. When the minute's quota is spent, a `Critical` also waits for the next minute.
 
 **Division of labour with `Ozakboy.Http`.** This package uses `HttpPipelineClient`, which folds exceptions into `Result`
 and tells timeouts from cancellation, and `WeightedRateLimiter`, which is built on `System.Threading.RateLimiting` and runs on `TimeProvider`.

@@ -32,6 +32,16 @@ First release. Targets `net10.0`. Depends only on first-party Microsoft packages
 - **Throttling**: `WeightedRateLimiter` (on `System.Threading.RateLimiting`, driven by `TimeProvider`) spaces
   messages to the chat by `MinimumInterval` (1 s) and caps `MaxMessagesPerMinute` (20). Resends pay for a slot too.
   每聊天間隔與每分鐘上限兩個桶;重送也要付節流額度。
+- **Critical priority lane**: a queued `Critical` is always ahead of every queued `Info` and `Warning`. It takes the next free
+  throttling slot, at most one `MinimumInterval` away, so critical alerts can arrive within five seconds (FR-12).
+  Priority changes the queue order only. `Critical` still honours the per-chat and per-minute limits and waits out
+  429 pauses, and the first message out after a pause is the `Critical`. A message already being sent is not
+  interrupted. `Info` and `Warning` keep their arrival order. It is a small two-queue gate in front of the limiter, BCL only.
+  Critical 優先通道:永遠排在 Info / Warning 前面、下一個節流額度就送出;只影響排隊順序,不繞過速率限制,
+  429 暫停結束後第一個送出的是 Critical。
+- **Known limitation**: the throttle uses fixed windows, so two messages can occasionally go out less than a second apart across a
+  window boundary. An occasional 429 is absorbed by the resend logic.
+  已知限制:固定時間窗在邊界可能讓兩則間隔不到 1 秒,偶發的 429 由重送吸收。
 - **429 handling**: waits `parameters.retry_after` from the body, falling back to the `Retry-After` header, then
   resends. The pause is shared across the notifier. A wait longer than `MaxRetryAfter` returns
   `telegram.rate_limited` at once, and later sends fail fast until it ends.

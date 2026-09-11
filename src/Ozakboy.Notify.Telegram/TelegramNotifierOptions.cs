@@ -135,6 +135,11 @@ public sealed class TelegramNotifierOptions
     /// 設得太短,正常的突發量就開始丟訊息。預設 60 秒,足以消化一分鐘配額的突發。
     /// When a burst of alerts arrives, the later ones wait. Too long and callers stall without knowing why; too
     /// short and ordinary bursts start losing messages. The default of 60 seconds absorbs a full minute's quota.
+    /// <para>
+    /// Critical 走優先通道,只會排在其他 Critical 後面;它等到這個上限的情況只剩兩種:本分鐘的配額已用完,或 Telegram 要求暫停。
+    /// A Critical takes the priority lane and queues only behind other Criticals; it can reach this limit only when
+    /// the minute's quota is spent or Telegram has asked for a pause.
+    /// </para>
     /// </remarks>
     public TimeSpan ThrottleWaitLimit { get; set; } = TimeSpan.FromSeconds(60);
 

@@ -103,7 +103,8 @@ services.AddTelegramNotifier(options =>
 
 ## 訊息
 
-- **等級。**`Info` / `Warning` / `Critical` 顯示在最開頭:`[INFO]`、`[WARNING]`、`[CRITICAL]`。三級各對應一種反應:看看就好、今天處理、立刻處理。等級不影響送出方式:`Critical` 不會繞過節流,因為繞過只會換來 429,結果更晚送到。
+- **等級。**`Info` / `Warning` / `Critical` 顯示在最開頭:`[INFO]`、`[WARNING]`、`[CRITICAL]`。三級各對應一種反應:看看就好、今天處理、立刻處理。
+- **Critical 優先。**排隊中的 `Critical` 永遠排在所有 `Info` / `Warning` 前面,下一個可用的節流額度就是它的,最多等一個 `MinimumInterval`,讓緊急告警能在 5 秒內送到。優先只影響排隊順序:`Critical` 仍要付每聊天間隔與每分鐘上限的額度,也要等 429 暫停結束,因為搶快只會換來 429,結果更晚送到。暫停結束後第一個出去的就是 `Critical`;已經在送的那一則不會被中斷。`Info` 與 `Warning` 之間依抵達順序。
 - **純文字。**不設 `parse_mode`,每個字元都原樣顯示。什麼都不用跳脫。
 - **切分。**超過 4096 個 UTF-16 字元就依換行切分,每段標上 `(1/3)`、`(2/3)`……。單行過長時切在字素邊界上,emoji、ZWJ 組合、組合符號都不會被拆開。分段依序送出;某段失敗就不送後面的,錯誤會帶 `partsSent` / `partsTotal`。
 - **關閉連結預覽。**預覽會讓 Telegram 的伺服器去抓告警裡的任何網址。
@@ -125,6 +126,8 @@ services.AddTelegramNotifier(options =>
 **為什麼預設至少送達一次。**告警情境下兩種錯誤的代價不對等:重複一則,收件人多看一眼;漏掉一則,可能沒人知道系統已經停止交易。若你的情況是重複比漏送更貴,設 `TransientRetry = RetryPolicy.NoRetry`。
 
 本套件已經替你重試過的失敗會以 `ErrorCategory.Exhausted` 回傳,不是暫時性的,這樣你自己的重試層不會再把次數乘上去。
+
+**已知限制。**節流用的是固定時間窗:跨越時間窗邊界時,偶爾會有兩則間隔不到 1 秒。Telegram 的每聊天限制有彈性,偶發的 429 由上面的重送機制吸收。本分鐘的配額用完時,`Critical` 也要等到下一分鐘。
 
 **與 `Ozakboy.Http` 的分工。**本套件用它的 `HttpPipelineClient`(把例外收斂為 `Result`,並分辨逾時與取消)與 `WeightedRateLimiter`(建在 `System.Threading.RateLimiting` 上、以 `TimeProvider` 驅動)。不用 `RetryHandler`,理由有三:它讀不到本體裡的 `retry_after`;要讓它重試,`sendMessage` 就得被謊報為冪等;而且在標準順序下,它的重試會繞過節流。所以重試收在 `TelegramNotifier` 的單一迴圈裡。
 

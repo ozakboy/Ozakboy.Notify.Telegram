@@ -113,6 +113,20 @@ namespace Ozakboy.Notify.Telegram;
 /// guaranteeing the second is rejected. Alert text mostly comes from unpredictable strings — exception messages,
 /// symbol names — and plain text is the only format that can never fail to send because of its content.
 /// </para>
+/// <para>
+/// <b>Critical 優先通道。</b>需求 FR-12 要求 Critical 告警在 5 秒內送達;節流若只依抵達順序放行,一串 Info / Warning
+/// 之後的 Critical 要等它們全部送完,最壞要等到節流等待上限(預設 60 秒)。因此每一次送出(含重送)都先經過優先閘門:
+/// Critical 永遠排在所有 Info / Warning 前面,下一個可用的節流額度就是它的,最多等一個節流間隔。
+/// 優先<b>只影響排隊順序</b>:Critical 仍付每聊天間隔與每分鐘上限的額度,也要等 429 的暫停期結束 ——
+/// 搶快只會換來 429,結果更晚送到;暫停結束後第一個出去的就是 Critical。已經在送的那一則不會被中斷。
+/// <b>Critical priority lane.</b> FR-12 requires Critical alerts to arrive within 5 seconds. With throttling in
+/// arrival order only, a Critical behind a run of Info and Warning waits for all of them, in the worst case until
+/// the throttling wait limit (60 seconds by default). So every send, resends included, first passes a priority
+/// gate: a Critical is always ahead of every queued Info and Warning and takes the next free throttling slot, at
+/// most one interval away. Priority changes <b>queue order only</b>: a Critical still pays for a slot under the
+/// per-chat and per-minute limits and still waits out a 429 pause — rushing only earns a 429 and arrives later —
+/// and the first message out after the pause is the Critical. A message already being sent is never interrupted.
+/// </para>
 /// </remarks>
 public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
 {
@@ -137,12 +151,10 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
     private readonly int _maxRateLimitRetries;
     private readonly TimeSpan _maxRetryAfter;
     private readonly int _maxParts;
-    private readonly WeightedRateLimiter _limiter;
+    private readonly PrioritySendGate _gate;
     private readonly TokenRedactor _redactor;
     private readonly ILogger _logger;
     private readonly TimeProvider _timeProvider;
-    private readonly Lock _cooldownLock = new();
-    private DateTimeOffset _cooldownUntil = DateTimeOffset.MinValue;
     private bool _disposed;
 
     /// <summary>
@@ -236,21 +248,13 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
             OverallTimeout = options.RequestTimeout,
         };
 
-        // 兩個桶同時滿足才放行:每聊天的最短間隔,與每分鐘的總量。限流器依抵達順序放行,
-        // 所以同一個通知的多段訊息不會被別的通知插隊打亂順序。
-        // A send goes out only when both buckets allow it: the per-chat spacing and the per-minute total. The
-        // limiter admits in arrival order, so the parts of one notification are not interleaved out of order.
-        _limiter = new WeightedRateLimiter(
-            new RateLimitOptions
-            {
-                AcquisitionTimeout = options.ThrottleWaitLimit,
-                Buckets =
-                {
-                    new RateLimitBucket("per-chat-interval", 1, options.MinimumInterval),
-                    new RateLimitBucket("per-minute", options.MaxMessagesPerMinute, TimeSpan.FromMinutes(1)),
-                },
-            },
-            _timeProvider);
+        // 排隊與節流交給優先閘門:兩個桶(每聊天的最短間隔、每分鐘的總量)同時滿足才放行,Critical 先於 Info / Warning。
+        // 同一則通知的各段依序送出(前一段完成才排下一段),段與段之間可能夾著別的通知。
+        // Queueing and throttling belong to the priority gate: a send goes out only when both buckets (per-chat
+        // spacing and the per-minute total) allow it, with Critical ahead of Info and Warning. The parts of one
+        // notification go out in order (each waits for the previous one), though another notification may land
+        // between two parts.
+        _gate = new PrioritySendGate(options.MinimumInterval, options.MaxMessagesPerMinute, options.ThrottleWaitLimit, _timeProvider);
     }
 
     /// <inheritdoc />
@@ -274,7 +278,10 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
         var parts = TelegramMessageSplitter.Split(notification.Level, notification.Text, _maxParts);
         for (var index = 0; index < parts.Count; index++)
         {
-            var sent = await SendPartAsync(BuildPayload(parts[index]), cancellationToken).ConfigureAwait(false);
+            var sent = await SendPartAsync(
+                BuildPayload(parts[index]),
+                notification.Level == NotificationLevel.Critical,
+                cancellationToken).ConfigureAwait(false);
             if (sent.IsFailure)
             {
                 // 所有要交出去的錯誤都在這一個出口遮罩,不散落在各個失敗分支。
@@ -294,8 +301,14 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
     }
 
     /// <summary>
-    /// 釋放節流器。
-    /// Releases the throttling limiter.
+    /// 仍在節流佇列裡排隊的送出數。供測試確認排隊狀態。
+    /// How many sends are still queued for throttling. Lets tests confirm the queue state.
+    /// </summary>
+    internal int QueuedCount => _gate.QueuedCount;
+
+    /// <summary>
+    /// 釋放節流閘門;仍在排隊的送出會以 <see cref="TelegramErrorCodes.Cancelled"/> 結束。
+    /// Releases the throttling gate; sends still queued end with <see cref="TelegramErrorCodes.Cancelled"/>.
     /// </summary>
     public void Dispose()
     {
@@ -305,7 +318,7 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
         }
 
         _disposed = true;
-        _limiter.Dispose();
+        _gate.Dispose();
     }
 
     private static Func<HttpClient> FromFactory(IHttpClientFactory httpClientFactory)
@@ -341,7 +354,7 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
         return new Uri(root + "bot" + token + "/sendMessage", UriKind.Absolute);
     }
 
-    private async Task<Result> SendPartAsync(byte[] payload, CancellationToken cancellationToken)
+    private async Task<Result> SendPartAsync(byte[] payload, bool critical, CancellationToken cancellationToken)
     {
         var sends = 0;
         var transientFailures = 0;
@@ -349,19 +362,24 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
 
         while (true)
         {
-            var cooldown = await WaitForCooldownAsync(cancellationToken).ConfigureAwait(false);
-            if (cooldown.IsFailure)
+            // 剩下的 429 暫停比願意等的還長:不排隊、不等,直接交回呼叫端,讓它改走其他管道。
+            // The remaining 429 pause is longer than the wait allowed: do not queue and do not wait; hand it back
+            // so the caller can switch channels.
+            var cooldown = _gate.CooldownRemaining;
+            if (cooldown > _maxRetryAfter)
             {
-                return cooldown.Error.WithData(TelegramErrorDataKeys.Attempts, sends);
+                return TelegramErrorMapper.CoolingDown(cooldown).WithData(TelegramErrorDataKeys.Attempts, sends);
             }
 
-            // 每一次送出(包括重送)都要付出節流額度,重試風暴才不會變成 429 風暴。
-            // Every send, resends included, pays for a throttling slot, so a retry storm cannot turn into a
-            // 429 storm.
-            var slot = await _limiter.AcquireAsync(1, cancellationToken).ConfigureAwait(false);
-            if (slot.IsFailure)
+            // 每一次送出(包括重送)都重新排隊並付出節流額度,重試風暴才不會變成 429 風暴;
+            // 重送保有原本的等級,所以 429 暫停結束後第一個出去的仍是 Critical。
+            // Every send, resends included, queues again and pays for a throttling slot, so a retry storm cannot
+            // turn into a 429 storm; a resend keeps its level, so the first message out after a 429 pause is still
+            // the Critical.
+            var turn = await _gate.WaitForTurnAsync(critical, cancellationToken).ConfigureAwait(false);
+            if (turn.IsFailure)
             {
-                return TelegramErrorMapper.FromThrottle(slot.Error).WithData(TelegramErrorDataKeys.Attempts, sends);
+                return turn.Error.WithData(TelegramErrorDataKeys.Attempts, sends);
             }
 
             sends++;
@@ -384,9 +402,10 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
                     ? TimeSpan.FromSeconds((double)seconds)
                     : TimeSpan.Zero;
 
-                // 暫停期是整個通知器共用的:同一時間其他通知也不該去撞 Telegram。
-                // The pause is shared by the whole notifier: no other notification should hit Telegram meanwhile.
-                ExtendCooldown(retryAfter);
+                // 暫停期是整個通知器共用的:同一時間其他通知(Critical 也一樣)都不該去撞 Telegram。
+                // The pause is shared by the whole notifier: no other notification, Critical included, should hit
+                // Telegram meanwhile.
+                _gate.ExtendCooldown(retryAfter);
 
                 if (retryAfter > _maxRetryAfter)
                 {
@@ -475,47 +494,6 @@ public sealed partial class TelegramNotifier : ITelegramNotifier, IDisposable
             : null;
 
         return TelegramErrorMapper.FromResponse(response.StatusCode, parsed, headerRetryAfter);
-    }
-
-    private async Task<Result> WaitForCooldownAsync(CancellationToken cancellationToken)
-    {
-        TimeSpan remaining;
-        lock (_cooldownLock)
-        {
-            remaining = _cooldownUntil - _timeProvider.GetUtcNow();
-        }
-
-        if (remaining <= TimeSpan.Zero)
-        {
-            return Result.Success();
-        }
-
-        // 剩下的暫停比願意等的還長:不送、不等,直接交回呼叫端,讓它改走其他管道。
-        // The remaining pause is longer than the wait allowed: do not send and do not wait; hand it back so the
-        // caller can switch channels.
-        if (remaining > _maxRetryAfter)
-        {
-            return TelegramErrorMapper.CoolingDown(remaining);
-        }
-
-        return await DelayAsync(remaining, cancellationToken).ConfigureAwait(false);
-    }
-
-    private void ExtendCooldown(TimeSpan retryAfter)
-    {
-        if (retryAfter <= TimeSpan.Zero)
-        {
-            return;
-        }
-
-        lock (_cooldownLock)
-        {
-            var until = _timeProvider.GetUtcNow() + retryAfter;
-            if (until > _cooldownUntil)
-            {
-                _cooldownUntil = until;
-            }
-        }
     }
 
     private async Task<Result> DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
