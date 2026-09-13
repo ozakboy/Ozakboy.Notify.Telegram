@@ -149,7 +149,7 @@ out less than a second apart. Telegram's per-chat limit is soft, and an occasion
 logic above. When the minute's quota is spent, a `Critical` also waits for the next minute.
 
 **Division of labour with `Ozakboy.Http`.** The named client is built with `AddOzakboyHttpPipeline` (`Ozakboy.Http`
-0.3.0), which supplies masked logging, the token masker, and the timeouts. `HttpPipelineClient` folds exceptions into
+0.3.2), which supplies masked logging, the token masker, and the timeouts. `HttpPipelineClient` folds exceptions into
 `Result` and tells timeouts from cancellation. Throttling uses `WeightedRateLimiter`, built on
 `System.Threading.RateLimiting` and running on `TimeProvider`, inside the notifier's own priority gate. The pipeline's
 rate limiting is off, and its `RetryHandler` is set to `RetryPolicy.NoRetry`. Retries stay in one loop in

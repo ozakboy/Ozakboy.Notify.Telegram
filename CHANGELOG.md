@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-09-12
 
-First release. Targets `net10.0`. Depends only on first-party Microsoft packages and `Ozakboy.Http` 0.3.0,
+First release. Targets `net10.0`. Depends only on first-party Microsoft packages and `Ozakboy.Http` 0.3.2,
 `Ozakboy.Core.Abstractions` 0.3.0, and `Ozakboy.Security` 0.1.1. Replaces `Telegram.Bot` for alerting.
 
-首次發佈。目標框架 `net10.0`,只相依 Microsoft 官方套件與 `Ozakboy.Http` 0.3.0、`Ozakboy.Core.Abstractions` 0.3.0、
+首次發佈。目標框架 `net10.0`,只相依 Microsoft 官方套件與 `Ozakboy.Http` 0.3.2、`Ozakboy.Core.Abstractions` 0.3.0、
 `Ozakboy.Security` 0.1.1。用於告警推播,取代 `Telegram.Bot`。
 
 ### Added
@@ -63,7 +63,7 @@ First release. Targets `net10.0`. Depends only on first-party Microsoft packages
 
 ### Changed
 
-- **Technical: built on `Ozakboy.Http` 0.3.0.** The named client is now assembled with `AddOzakboyHttpPipeline`, with
+- **Technical: built on `Ozakboy.Http` 0.3.2.** The named client is now assembled with `AddOzakboyHttpPipeline`, with
   signing and rate limiting off and its retry handler set to `RetryPolicy.NoRetry`. The token and its post-colon
   secret go into `HttpPipelineOptions.KnownSecrets`, and the facade comes from `CreateOzakboyHttpPipelineClient`. This
   replaces the package's own `RemoveAllLoggers()` and infinite-timeout setup and its hand-built facade. The pipeline's
@@ -72,7 +72,7 @@ First release. Targets `net10.0`. Depends only on first-party Microsoft packages
   builds itself. The priority gate and the resend loop are unchanged. The rules the 0.3.0 pipeline introduced (every
   attempt pays its own weight, local rate-limit timeouts are not retried, queueing is not attempt time) already held
   for them.
-  技術改進:改用 `Ozakboy.Http` 0.3.0。具名用戶端改以 `AddOzakboyHttpPipeline` 組成(簽章、限流關閉,重試設為 `NoRetry`),
+  技術改進:改用 `Ozakboy.Http` 0.3.2。具名用戶端改以 `AddOzakboyHttpPipeline` 組成(簽章、限流關閉,重試設為 `NoRetry`),
   權杖登記進 `KnownSecrets`,門面改由 `CreateOzakboyHttpPipelineClient` 建立,取代本套件自行移除預設日誌、自設逾時與手動建立門面的做法;
   管線的遮罩日誌處理器現在會記下已遮罩權杖的位址。出口遮罩(`RedactedException`)保留,負責管線看不到的來源。
   優先閘門與重送迴圈不變:0.3.0 管線的新原則(每次嘗試各付權重、本地限流逾時不重試、排隊不計入單次逾時)在這裡本來就成立。

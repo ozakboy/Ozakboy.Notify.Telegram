@@ -42,7 +42,7 @@
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
     <PackageReference Include="Ozakboy.Core.Abstractions" Version="0.3.0" />
-    <PackageReference Include="Ozakboy.Http" Version="0.3.0" />
+    <PackageReference Include="Ozakboy.Http" Version="0.3.2" />
     <PackageReference Include="Ozakboy.Security" Version="0.1.1" />
   </ItemGroup>
 

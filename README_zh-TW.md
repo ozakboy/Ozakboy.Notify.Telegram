@@ -129,7 +129,7 @@ services.AddTelegramNotifier(options =>
 
 **已知限制。**節流用的是固定時間窗:跨越時間窗邊界時,偶爾會有兩則間隔不到 1 秒。Telegram 的每聊天限制有彈性,偶發的 429 由上面的重送機制吸收。本分鐘的配額用完時,`Critical` 也要等到下一分鐘。
 
-**與 `Ozakboy.Http` 的分工。**具名用戶端以 `AddOzakboyHttpPipeline`(`Ozakboy.Http` 0.3.0)組成,由它提供遮罩日誌、權杖遮罩器與逾時;`HttpPipelineClient` 把例外收斂為 `Result`,並分辨逾時與取消;節流用 `WeightedRateLimiter`(建在 `System.Threading.RateLimiting` 上、以 `TimeProvider` 驅動),放在通知器自己的優先閘門裡。管線的限流段關閉,`RetryHandler` 設為 `RetryPolicy.NoRetry`。重試收在 `TelegramNotifier` 的單一迴圈裡,理由有三:`RetryHandler` 讀不到本體裡的 `retry_after`;要讓它重試,`sendMessage` 就得被謊報為冪等;而管線的限流器依抵達順序放行,給不了 `Critical` 優先,也無法讓 429 暫停由整個通知器共用。每一次送出(含重送)都重新在閘門排隊、各付一份額度,與 0.3.0 管線的原則相同。
+**與 `Ozakboy.Http` 的分工。**具名用戶端以 `AddOzakboyHttpPipeline`(`Ozakboy.Http` 0.3.2)組成,由它提供遮罩日誌、權杖遮罩器與逾時;`HttpPipelineClient` 把例外收斂為 `Result`,並分辨逾時與取消;節流用 `WeightedRateLimiter`(建在 `System.Threading.RateLimiting` 上、以 `TimeProvider` 驅動),放在通知器自己的優先閘門裡。管線的限流段關閉,`RetryHandler` 設為 `RetryPolicy.NoRetry`。重試收在 `TelegramNotifier` 的單一迴圈裡,理由有三:`RetryHandler` 讀不到本體裡的 `retry_after`;要讓它重試,`sendMessage` 就得被謊報為冪等;而管線的限流器依抵達順序放行,給不了 `Critical` 優先,也無法讓 429 暫停由整個通知器共用。每一次送出(含重送)都重新在閘門排隊、各付一份額度,與 0.3.0 管線的原則相同。
 
 ---
 
