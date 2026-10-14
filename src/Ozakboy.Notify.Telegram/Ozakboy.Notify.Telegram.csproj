@@ -13,6 +13,7 @@
     <RepositoryUrl>https://github.com/ozakboy/Ozakboy.Notify.Telegram</RepositoryUrl>
 
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReleaseNotes>0.1.0 (2026-10-15) — First release. ITelegramNotifier / TelegramNotifier returning Result; Info / Warning / Critical levels with a Critical priority lane; plain-text only; grapheme-safe splitting over 4096 characters; per-chat throttling on System.Threading.RateLimiting; 429 retry_after handling; at-least-once retry of transient failures; bot token registered as a known secret and redacted from every error. Full changelog: https://github.com/ozakboy/Ozakboy.Notify.Telegram/blob/main/CHANGELOG.md</PackageReleaseNotes>
   </PropertyGroup>
 
   <!-- 內部型別(訊息切分、回應解析、權杖遮罩)需要直接測試,它們不屬於公開契約。 -->

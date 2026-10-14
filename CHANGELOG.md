@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-12
+## [0.1.0] - 2026-10-15
 
 First release. Targets `net10.0`. Depends only on first-party Microsoft packages and `Ozakboy.Http` 0.3.2,
 `Ozakboy.Core.Abstractions` 0.3.0, and `Ozakboy.Security` 0.1.1. Replaces `Telegram.Bot` for alerting.
